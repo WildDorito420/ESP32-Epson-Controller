@@ -31,6 +31,7 @@ void setup() {
   Serial.begin(115200);
   Serial.println("Booting");
   WiFi.mode(WIFI_STA);
+  WiFi.setHostname(device_name);
   WiFi.begin(ssid, password);
   while (WiFi.waitForConnectResult() != WL_CONNECTED) {
     Serial.println("Connection Failed! Rebooting...");
@@ -56,7 +57,7 @@ void setup() {
   // ArduinoOTA.setPort(3232);
 
   // Hostname defaults to esp3232-[MAC]
-  ArduinoOTA.setHostname("myesp32");
+  ArduinoOTA.setHostname(device_name);
 
   // No authentication by default
   // ArduinoOTA.setPassword("admin");
