@@ -11,4 +11,7 @@ Some goals I thought of on the spot (can't confirm if these will ever be complet
 
 ## Required Libraries:
 - EspSoftwareSerial
-
+- WiFi (comes with ESP32 library)
+- ESPmDNS.h (comes with ESP32 library)
+- WiFiUdp.h (comes with ESP32 library)
+- ArduinoOTA.h (comes with ESP32 library)

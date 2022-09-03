@@ -1,19 +1,33 @@
-#define RXD2 14
-#define TXD2 13
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
-#include "private.h"
+#include <WebServer.h>
 
+#include "private.h"
+#include "types.h"
+#include "html.h"
+//#include "power.h"
+//#include "commands.h"
+
+#define RXD2 14
+#define TXD2 13
 #include <SoftwareSerial.h>
 SoftwareSerial swSer(RXD2,TXD2);
 
+WebServer server(80);
+
+String lastStatus = "";
+int avMute(int toggle=0);
+int freeze(int toggle=0);
+int power(int toggle=0);
+String htmlRender(String msg=lastStatus);
+
 const char* ssid = ssid_name;
 const char* password = ssid_pass;
+const char* device_name = dev_name;
 
 void setup() {
-  // Note the format for setting a serial port is as follows: Serial2.begin(baud-rate, protocol, RX pin, TX pin);
   Serial.begin(115200);
   Serial.println("Booting");
   WiFi.mode(WIFI_STA);
@@ -82,14 +96,102 @@ void setup() {
   Serial.println("Ready");
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
+  delay(250);
+  server.on("/", handle_OnConnect);
+  server.on("/power", handle_power);
+  server.on("/avmute", handle_avmute);
+  server.on("/freeze", handle_freeze);
+  server.onNotFound(handle_NotFound);
+  
+  server.begin();
+  Serial.println("HTTP server started");
 }
 
 void loop() {
   ArduinoOTA.handle();
-  if (Serial.available()) { // if there is data comming
-    String command = Serial.readStringUntil('\n'); // read string until newline character
+  server.handleClient();
+  if (Serial.available()) { 
+    String command = Serial.readStringUntil('\n'); 
     sendCommand(command);
   }
+}
+
+String htmlRender(String msg) {
+    int pwr = power();
+    int av = avMute();
+    int fr = freeze();
+    return SendHTML(pwr, av, fr, msg);
+}
+
+void handle_OnConnect() {
+  server.send(200, "text/html", htmlRender()); 
+}
+
+void handle_power() {
+  String msg = "";
+  int stat = power(1);
+  if (stat == 0) {
+    msg = "power toggle success";
+  } else if (stat == -1) {
+    msg = "power toggle failed";
+  }
+  lastStatus = msg;
+  server.send(200, "text/html", redirectHome()); 
+}
+
+void handle_avmute() {
+  String msg = "";
+  int stat = avMute(1);
+  if (stat == 0) {
+    msg = "AV Mute toggle success";
+  } else if (stat == -1) {
+    msg = "AV Mute toggle failed";
+  }
+  lastStatus = msg;
+  server.send(200, "text/html", redirectHome()); 
+}
+
+void handle_freeze() {
+  String msg = "";
+  int stat = freeze(1);
+  if (stat == 0) {
+    msg = "freeze toggle success";
+  } else if (stat == -1) {
+    msg = "freeze toggle failed";
+  }
+  lastStatus = msg;
+  server.send(200, "text/html", redirectHome()); 
+}
+
+void handle_NotFound(){
+  server.send(404, "text/plain", "Not found");
+}
+
+int checkError(String arg)
+{
+  const String result = sendCommand("ERR?");
+  if (result.startsWith("ERR="))
+    result.substring(4);
+  return result.toInt();
+}
+
+int ok(String arg)
+{
+  return checkError(arg) == 0 ? 0 : -1;
+}
+
+
+bool detectError(String result, String errorMessage)
+{
+  const bool error = result.equals("ERR");
+  if (error)
+    report(errorMessage);
+  return error;
+}
+
+void report(String descr)
+{
+  Serial.println(descr);
 }
 
 void write(String cmd)
@@ -112,8 +214,11 @@ String read()
 
 String sendCommand(String cmd)
 {
+  Serial.print("Sending command: ");
+  Serial.println(cmd);
   write(cmd);
   String result = read();
+  result.replace(":", "");
   Serial.print("read: >>");
   Serial.print(result);
   Serial.println("<<");
@@ -123,3 +228,187 @@ String sendCommand(String cmd)
   result.trim();
   return result;
 }
+
+int avMute(int toggle) {
+  String result = sendCommand("MUTE?");
+  if (detectError(result, "projector mute check failed"))
+    return -1;
+  
+  if(result.equals("MUTE=OFF")) {
+    if(toggle == 0) {
+      return 0;
+    } else {
+      result = sendCommand("MUTE ON");
+    }
+  } else if(result.equals("MUTE=ON")){
+    if (toggle == 0) {
+      return 1;      
+    } else {
+      result = sendCommand("MUTE OFF");
+    }
+  }
+    
+  if (detectError(result, "projector mute toggle failed")) {
+    return -1;
+  } else {
+    const bool cond = result.equals("");
+    cond ? report("projector mute toggle success") : report("projector mute toggle failed");
+    return cond ? 0 : -1;
+  }
+}
+
+
+int freeze(int toggle) {
+  String result = sendCommand("FREEZE?");
+  if (detectError(result, "projector freeze check failed"))
+    return -1;
+  
+  if(result.equals("FREEZE=OFF")) {
+    if(toggle == 0) {
+      return 0;
+    } else {
+      result = sendCommand("FREEZE ON");
+    }
+  } else if(result.equals("FREEZE=ON")){
+    if (toggle == 0) {
+      return 1;      
+    } else {
+      result = sendCommand("FREEZE OFF");
+    }
+  }
+    
+  if (detectError(result, "projector freeze toggle failed")) {
+    return -1;
+  } else {
+    const bool cond = result.equals("");
+    cond ? report("projector freeze toggle success") : report("projector freeze toggle failed");
+    return cond ? 0 : -1;
+  }
+}
+
+int power(int toggle) {
+  POWER status = getPower();
+  String result = "";
+
+  if(status == OFF || status == COOLINGDOWN || status == STANDBYNETWORKON || status == ABNORMALSTANDBY) {
+    if(toggle == 0) {
+      return 0;
+    } else {
+      result = sendCommand("PWR ON");
+      delay(2500);
+    }
+  } else if(status == ON || status == WARMUP){
+    if (toggle == 0) {
+      return 1;      
+    } else {
+      result = sendCommand("PWR OFF");
+      delay(250);
+    }
+  }
+    
+  if (detectError(result, "projector power toggle failed")) {
+    return -1;
+  } else {
+    const bool cond = result.equals("");
+    cond ? report("projector power toggle success") : report("projector power toggle failed");
+    return cond ? 0 : -1;
+  }
+}
+
+
+POWER getPower()
+{
+  String result = sendCommand("PWR?");
+  if (detectError(result, "projector status check failed"))
+    return UNKNOWN;
+
+  if (result.equals("PWR=00"))
+    return OFF;
+  if (result.equals("PWR=01"))
+    return ON;
+  if (result.equals("PWR=02"))
+    return WARMUP;
+  if (result.equals("PWR=03"))
+    return COOLINGDOWN;
+  if (result.equals("PWR=04"))
+    return STANDBYNETWORKON;
+  if (result.equals("PWR=05"))
+    return ABNORMALSTANDBY;
+
+  report("unexpected status: " + result);
+  return UNKNOWN;
+}
+
+// int power(String arg)
+// {
+//   if (arg.equals("on") || arg.equals("1"))
+//     return powerOn();
+//   if (arg.equals("off") || arg.equals("0"))
+//     return powerOff();
+//   if (arg.equals("?") || arg.equals(""))
+//     return powerStatus();
+
+//   report("unexpected arg: '" + arg + "'");
+//   return -1;
+// }
+
+int powerOn()
+{
+  const POWER status = getPower();
+  if (status == ON || status == WARMUP)
+  {
+      //mqttClient.publish(MQTT_PROJECTOR_STATUS, "on", false, 1);
+      return 0;
+  }
+
+  const String result = sendCommand("PWR ON");
+  if (detectError(result, "projector turn on failed"))
+  {
+    return -1;
+  }
+
+  report("PWR ON: " + result);
+
+  const bool cond = result.equals("");
+  const String status_str = cond ? "on" : "off";
+  //mqttClient.publish(MQTT_PROJECTOR_STATUS, status_str, false, 1);
+  cond ? report("projector turned on") : report("projector turn on failed");
+  return cond ? 0 : -1;
+}
+
+int powerOff()
+{
+  const POWER status = getPower();
+  if (status == OFF || status == STANDBYNETWORKON)
+  {
+    //mqttClient.publish(MQTT_PROJECTOR_STATUS, "on", false, 1);
+    return 0;
+  }
+
+  const String result = sendCommand("PWR OFF");
+  if (detectError(result, "projector turn off failed"))
+  {
+    return -1;
+  }
+  
+  report("PWR OFF: " + result);
+  
+  const bool cond = result.equals("");
+  String status_str = cond ? "off" : "on";
+  //mqttClient.publish(MQTT_PROJECTOR_STATUS, status_str, false, 1);
+  cond ? report("projector turned off") : report("projector turn off failed");
+  return cond ? 0 : -1;
+}
+
+int powerStatus()
+{
+  const POWER status = getPower();
+  if (status == UNKNOWN)
+  {
+    return -1;
+  }
+  String status_str = (status == ON || status == WARMUP) ? "on" : "off";
+  //mqttClient.publish(MQTT_PROJECTOR_STATUS, status_str, false, 1);
+  return (status == ON || status == WARMUP) ? 1 : 0;
+}
+
